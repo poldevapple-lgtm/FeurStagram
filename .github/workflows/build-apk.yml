@@ -52,13 +52,13 @@ jobs:
 
       - name: Install build-tools (for apksigner)
         # ubuntu-latest already ships a full Android SDK with ANDROID_HOME set,
-        # so we install the one extra build-tools revision we need directly
-        # rather than via android-actions/setup-android, which currently fails
-        # trying to install the deprecated legacy "tools" package.
+        # so install the one extra build-tools revision directly rather than
+        # via android-actions/setup-android, which currently fails trying to
+        # install the deprecated legacy "tools" package.
         run: |
-          echo "y" | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" || \
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses <<< $'y\n'.repeat(10) 2>/dev/null; \
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0"
+          SDKMANAGER="$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "build-tools;34.0.0"
 
       - name: Cache Gradle
         uses: actions/cache@v4
