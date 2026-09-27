@@ -35,6 +35,9 @@ jobs:
     env:
       # gradlew needs to be executable; some checkouts lose the bit.
       GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+      # secrets can't be referenced directly in `if:` conditions, so mirror the
+      # presence check into a plain env var here and test that instead.
+      HAS_KEYSTORE: ${{ secrets.FEURSTAGRAM_KEYSTORE_B64 != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,8 +110,10 @@ jobs:
           echo "INPUT_APK=input.${ext}" >> "$GITHUB_ENV"
 
       - name: Decode signing keystore (optional)
-        if: ${{ secrets.FEURSTAGRAM_KEYSTORE_B64 != '' }}
-        run: echo "${{ secrets.FEURSTAGRAM_KEYSTORE_B64 }}" | base64 -d > feurstagram.keystore
+        if: ${{ env.HAS_KEYSTORE == 'true' }}
+        run: echo "$FEURSTAGRAM_KEYSTORE_B64" | base64 -d > feurstagram.keystore
+        env:
+          FEURSTAGRAM_KEYSTORE_B64: ${{ secrets.FEURSTAGRAM_KEYSTORE_B64 }}
 
       - name: Build
         env:
