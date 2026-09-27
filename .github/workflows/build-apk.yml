@@ -106,8 +106,7 @@ jobs:
           curl -fL "${{ inputs.apk_url }}" -o input_app
           # Re-derive the real extension from the URL so build.sh's case
           # statement (apkm/xapk/apks vs apk) picks the right code path.
-          ext="${${{ toJSON(inputs.apk_url) }}##*.}"
-          ext="$(echo '${{ inputs.apk_url }}' | sed 's/.*\.//')"
+          ext="$(echo '${{ inputs.apk_url }}' | sed -e 's/[?#].*//' -e 's/.*\.//')"
           mv input_app "input.${ext}"
           echo "INPUT_APK=input.${ext}" >> "$GITHUB_ENV"
 
