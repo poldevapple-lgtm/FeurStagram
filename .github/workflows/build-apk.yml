@@ -1,0 +1,137 @@
+name: Build APK
+
+# Builds feurstagram.apk via ./build.sh, mirroring what the script needs locally:
+# JDK 21, the Android SDK (for apksigner), a Gradle build of :patches:build, and
+# optional release signing from repo secrets.
+#
+# The input Instagram APK/APKM/XAPK/APKS isn't distributed here (redistribution
+# concerns), so this workflow expects it to be supplied at run time — either as
+# a workflow_dispatch input URL you host yourself, or by uploading the file as
+# a build artifact beforehand and adjusting the "Obtain input APK" step below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: >
+          Direct URL to the input .apk/.apkm/.xapk/.apks (must be a source you
+          are authorized to distribute from / download in CI).
+        required: true
+        type: string
+      clone:
+        description: "Install side-by-side as a separate package (--clone)"
+        required: false
+        type: boolean
+        default: false
+      debug_bridge:
+        description: "Enable the Debug bridge patch (--debug) — testing only, never for release builds"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # gradlew needs to be executable; some checkouts lose the bit.
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        # Provides ANDROID_HOME / ANDROID_SDK_ROOT and installs platform-tools +
+        # build-tools, which build.sh needs to find apksigner.
+
+      - name: Install a build-tools revision (for apksigner)
+        run: sdkmanager --install "build-tools;34.0.0"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Configure GitHub Packages credentials
+        # build.sh reads GITHUB_TOKEN/GITHUB_ACTOR to resolve the patcher
+        # dependency from GitHub Packages. The default GITHUB_TOKEN needs
+        # read:packages, which works for public/same-org packages; use a PAT
+        # in a secret if the dependency lives elsewhere.
+        run: |
+          echo "GITHUB_TOKEN=${{ secrets.GH_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}" >> "$GITHUB_ENV"
+          echo "GITHUB_ACTOR=${{ github.actor }}" >> "$GITHUB_ENV"
+
+      - name: Fetch tools/ (Morphe CLI, APKEditor) if not committed
+        # Skip fetching whichever jar already lives under tools/ in the repo.
+        # The CLI jar is published as morphe-desktop-*-all.jar by MorpheApp/morphe-desktop
+        # (build.sh's own glob also accepts the older morphe-cli-*.jar naming).
+        run: |
+          mkdir -p tools
+          if ! ls tools/morphe-cli-*.jar tools/morphe-desktop-*.jar >/dev/null 2>&1; then
+            echo "==> Fetching latest Morphe Desktop CLI jar"
+            gh release download -R MorpheApp/morphe-desktop -p '*-all.jar' -D tools/ --clobber || \
+              echo "::warning::Could not fetch the Morphe CLI jar automatically; download morphe-desktop-*-all.jar from https://github.com/MorpheApp/morphe-desktop/releases into tools/."
+          fi
+          if ! ls tools/APKEditor-*.jar >/dev/null 2>&1; then
+            echo "==> Fetching APKEditor (needed only for .apkm/.xapk/.apks inputs)"
+            gh release download V1.4.9 -R REAndroid/APKEditor -p 'APKEditor-1.4.9.jar' -D tools/ || \
+              echo "::warning::Could not fetch APKEditor; split-bundle inputs (.apkm/.xapk/.apks) will fail to merge."
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Obtain input APK
+        run: |
+          curl -fL "${{ inputs.apk_url }}" -o input_app
+          # Re-derive the real extension from the URL so build.sh's case
+          # statement (apkm/xapk/apks vs apk) picks the right code path.
+          ext="${${{ toJSON(inputs.apk_url) }}##*.}"
+          ext="$(echo '${{ inputs.apk_url }}' | sed 's/.*\.//')"
+          mv input_app "input.${ext}"
+          echo "INPUT_APK=input.${ext}" >> "$GITHUB_ENV"
+
+      - name: Decode signing keystore (optional)
+        if: ${{ secrets.FEURSTAGRAM_KEYSTORE_B64 != '' }}
+        run: echo "${{ secrets.FEURSTAGRAM_KEYSTORE_B64 }}" | base64 -d > feurstagram.keystore
+
+      - name: Build
+        env:
+          FEURSTAGRAM_KEYSTORE_PASS: ${{ secrets.FEURSTAGRAM_KEYSTORE_PASS }}
+          FEURSTAGRAM_KEY_PASS: ${{ secrets.FEURSTAGRAM_KEY_PASS }}
+        run: |
+          ARGS=("$INPUT_APK")
+          [ "${{ inputs.clone }}" = "true" ] && ARGS+=(--clone)
+          [ "${{ inputs.debug_bridge }}" = "true" ] && ARGS+=(--debug)
+          chmod +x ./build.sh
+          ./build.sh "${ARGS[@]}"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: feurstagram-apk
+          path: feurstagram.apk
+          if-no-files-found: error
+
+      - name: Upload patch report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-report
+          path: build/patch-report.json
+          if-no-files-found: ignore
